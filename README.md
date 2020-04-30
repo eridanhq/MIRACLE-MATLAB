@@ -1,4 +1,5 @@
 <img src="Eridan_Logo_RGB.png" width="200">
+
 # MIRACLE-MATLAB
 
 MATLAB API for MIRACLE DevKit.
