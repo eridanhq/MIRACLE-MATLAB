@@ -30,6 +30,8 @@ classdef MIRACLETX < handle
             obj.FPGA.ReadAsyncMode = 'continuous'; % Continously query device to determine if data is available to be read
             open(obj); % Open serial connection to FPGA
             
+            connect(obj); % connect via serial port
+            
         end
         
         function open(obj)
