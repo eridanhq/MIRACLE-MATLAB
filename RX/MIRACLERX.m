@@ -23,7 +23,7 @@ tx_buff_size = 65530;
 rx_buff_size = 16384;
 
 s = iio_sys_obj_matlab; 
-s.ip_address = '192.168.1.224'; %** IP address of ZC706 - change accordingly
+s.ip_address = '192.168.1.117'; %** IP address of ZCU104 - change accordingly
 s.dev_name = 'ad9361'; 
 s.in_ch_no = 2; % I = chan 1, Q = chan 2
 s.out_ch_no = 4; % RX1_I = chan 1, RX1_Q = chan 2, RX2_I = chan 3, RX2_Q = chan 4

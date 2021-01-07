@@ -1,174 +1,45 @@
 classdef MIRACLETX < handle
-    % Eridan MIRACLE DevKit
+    % Eridan MIRACLE DevKit.  Requires the "SSH/SFTP/SCP For Matlab (v2)"
+	% library created by David Scott Freedman
+    % See https://www.mathworks.com/matlabcentral/fileexchange/35409-ssh-sftp-scp-for-matlab-v2
     properties
-        port char % Serial port for UART communication
         FPGA % FPGA object to handle serial connection
         ipAddr % IP address
         SSH % ssh connection
     end
     methods
-        function obj = MIRACLETX(prt)
-            % Constructor.  Must specify serial COM port
-            if nargin == 1
-                obj.port = prt; % assign input port
+        function obj = MIRACLETX(addr)
+            % Constructor.  Must specify IP address
+            
+            if any(ismember(addr,'.')) % string containing periods indicates IP address
+                obj.ipAddr = addr; % assign address
             else
-                error('Must specify COM port for obj.FPGA');
+                error('Invalid IP address input.');
             end
-            %             delete(instrfind('Port', obj.port));
             
-            warning('off','MATLAB:serial:fscanf:unsuccessfulRead'); % Supress timeout warnings
-            delete(instrfind('Port', obj.port));
-            
-            % create serial object to connect to FPGA
-            obj.FPGA = serial(obj.port);
-            set(obj.FPGA,'BaudRate',115200,'DataBits', 8, 'StopBits', 1,...
-                'Parity', 'none');
-            set(obj.FPGA,'InputBufferSize',1048576); % Input buffer size
-            set(obj.FPGA,'OutputBufferSize',1048576); % Output buffer size
-%             set(obj.FPGA, 'Timeout', .1); % Timeout
-            set(obj.FPGA, 'Timeout', .05); % Timeout
-            obj.FPGA.ReadAsyncMode = 'continuous'; % Continously query device to determine if data is available to be read
-            open(obj); % Open serial connection to FPGA
-            
-            connect(obj); % connect via serial port
-            
+            configSSH(obj); % connect via SSH
+            writeSSH(obj,'');
+            fprintf('Connected.\n');
         end
         
-        function open(obj)
-            % Opens serial connection to FPGA
-            fopen(obj.FPGA);
+        function obj = configSSH(obj)
+            % create the SSH object
+            
+            obj.SSH = ssh2_config(obj.ipAddr,'root','analog');
         end
         
-        function close(obj)
-            % Closes serial connection to FPGA
-            fclose(obj.FPGA);
-            obj.SSH = ssh2_close(obj.SSH);
-        end
-        
-        function out = readInBuff(obj)
-            % Reads data from the FPGA in the input buffer, if any
-            out = []; % Initialize output structure
-            
-            % Continuously read input buffer until obj.FPGA stops
-            % transmitting data
-            while get(obj.FPGA, 'BytesAvailable')
-                temp = fscanf(obj.FPGA); % Get data from buffer
-                out = [out temp]; % Concatenate to final output
-            end
-        end
-        
-        function out = read(obj,verbose,cmd,connectFlag)
-            % Reads terminal lines from FPGA, and prints it to command
-            % window. Effectively emmulates the Linux shell prompt. Command
-            % finishes once the command line string "analog:~#" is found in
-            % the response
-            
-            if nargin < 4
-                connectFlag = 0;
-            end
-            if nargin < 2
-                verbose = 0;
-            end
-            
-            out = []; % Initialize output structure
-            done = 0; % Initialize done flag
-            cmdLineStr = 'analog:~#'; % Command line string to indicate command has completed
-            
-            cycle = 0;
-            emptyBuffCount = 0;
-            if (~verbose && connectFlag)
-                fprintf('WAITING ON FPGA\n');
-            end
-            
-            while (~done)
-                temp = readInBuff(obj); % read the input buffer
-                if ~isempty(temp)
-                    emptyBuffCount = 0; % reset empty buffer count
-                    temp = regexprep(temp, {'\r', '\n\n+'}, {'', '\n'}); % remove extra lines
-                    out = [out temp];
-                    if any(strfind(out,cmdLineStr)) % look for the command line string
-                        done = 1;
-                    end
-                    if (verbose)
-                        if nargin==3
-                            temp = MIRACLETX.parseCmdLine(cmd,temp); % parse string for MATLAB friendly environment
-                        end
-                        fprintf(temp); % Print if verbose flag is set
-                    end
-                else
-                    emptyBuffCount = emptyBuffCount + 1;
-                    if emptyBuffCount > 20000
-                        write(obj,''); % press enter
-                        emptyBuffCount = 0;
-                    end
-                end
-                
-                if (~verbose && connectFlag)
-                    if cycle < 16383
-                        cycle = cycle+1;
-                    else
-                        cycle = 0;
-                        fprintf('.');
-                    end
-                end
-            end
-            
-            if (verbose)
-                fprintf('\n');
-            elseif (~verbose && connectFlag)
-                fprintf('\nCONNECTED TO FPGA\n');
-            end
-        end
-        
-        function write(obj,cmd)
-            % Writes string cmd to FPGA through output buffer on serial port
-            
-            fprintf(obj.FPGA,cmd);
-            while get(obj.FPGA, 'BytesToOutput')
-                % Wait until command is written to output buffer
-            end
-        end
-        
-        function out = writeRead(obj,cmd,verbose)
-            % Writes command to FPGA and reads the response
-            
+        function commandResponse = writeSSH(obj,cmd,verbose)
             if nargin < 3
                 verbose = 0;
             end
-            
-            readInBuff(obj); % Clear buffer if anything
-            write(obj,cmd); % Write command
-            
-            toParse = read(obj,verbose,cmd); % Readback response
-            
-            out = MIRACLETX.parseCmdLine(cmd,toParse); % parse string for MATLAB friendly environment
-        end
-        
-        function ipAddr = getIP(obj)
-            ipAddr = strtrim(writeRead(obj,'ifconfig eth0 | grep Mask | awk ''{print $2}''| cut -f2 -d:'));
-            obj.ipAddr = ipAddr;
-        end
-        
-        function connect(obj,verbose)
-            % Silently connects to FPGA
-            
-            if nargin < 2
-                verbose = 0;
-            end
-            
-            read(obj,verbose,'',1);
+            [obj.SSH, commandResponse] = ssh2_command(obj.SSH, cmd, verbose);
         end
         
         function list = getSigs(obj)
             % Returns a list of signals available on the FPGA's SD card
             
-            toParse = writeRead(obj,'getsigs');
-            
-            toParse = regexprep(toParse, {'\r', '\n\n+'}, {'', '\n'});
-            toParse = regexprep(toParse, {'\r', '\n\n+'}, {'', '\n'});
-            list = textscan(toParse,'%s','Delimiter','\n');
-            list = list{1};
-            list = list(~cellfun('isempty',list));
+            toParse = writeSSH(obj,'getsigs');
+            list = toParse;
         end
         
         function out = findSigs(obj,str)
@@ -179,42 +50,46 @@ classdef MIRACLETX < handle
             out = sigs(i);
         end
         
-        function jesdPhase = init(obj,verbose)
+        function jesdPhase = sysInit(obj,verbose)
             % Initializes MIRACLE RF Board
             if nargin < 2
-                verbose = 0;
+                verbose = 1;
             end
-            jesdPhase = str2double(writeRead(obj,'init',verbose));
+            
+            out = writeSSH(obj,'sysinit',verbose);
+            jesdPhase = str2double(out{end});
         end
         
         function off(obj)
             % Sets system to minimum output power.
             
-            write(obj,'off');
+            writeSSH(obj,'off');
         end
         
         function on(obj)
             % Sets system to maximum output power.  SYSON must have been
             % called already in order to call this command.
             
-            writeRead(obj,'on',1);
+            writeSSH(obj,'on');
         end
         
         function setSampleRate(obj,Fs)
             % Sets sampling rate of TX signal.  Enter Fs in Hz
             
-            write(obj,sprintf('setsamplerate %.0f',Fs));
+            writeSSH(obj,sprintf('setsamplerate %.0f',Fs));
+            setReg(obj,21,floor(Fs/100e6*2^16)); % adjust calc_rate
         end
         
         function setFreq(obj,f)
             % Sets TX carrier frequency in Hz
-            write(obj,sprintf('setfreq %.0f\n', f));
+            
+            writeSSH(obj,sprintf('setfreq %.0f\n', f));
         end
         
         function setPower(obj,p)
             % Sets power control register.  P should integer be in range [0,32767]
             
-            write(obj,sprintf('setpwr %g',round(p)));
+            writeSSH(obj,sprintf('setpwr %g',round(p)));
         end
         
         function setSig(obj,sig,Fs)
@@ -226,58 +101,82 @@ classdef MIRACLETX < handle
                 setSampleRate(obj,Fs);
             end
             
-            write(obj,sprintf('setsig %s',upper(sig)));
+            writeSSH(obj,sprintf('setsig %s',sig));
             
         end
         
-        function stat(obj)
+        function sysStat(obj)
             % Reports power status of MIRACLE DevKit TX
             
-            writeRead(obj,'stat',1);
+            writeSSH(obj,'sysstat',1);
         end
         
         function sysOff(obj)
             %     Sets power control register to 0, and turns system
             %     digitally controlled power supplies OFF
             
-            writeRead(obj,'sysoff',1);
+            writeSSH(obj,'sysoff',1);
         end
         
         function sysOn(obj)
             %     Turns system digitally-controlled power supplies ON
             
-            writeRead(obj,'syson',1);
+            writeSSH(obj,'syson',1);
         end
         
         function powerOff(obj)
             % Reports power status of MIRACLE DevKit TX
             
-            writeRead(obj,'sysoff',1);
+            writeSSH(obj,'sysoff',1);
             pause(1);
-            writeRead(obj,'poweroff',1);
+            writeSSH(obj,'poweroff',1);
             pause(3);
             fprintf('Safe to turn off FPGA board now.\n');
         end
-    end
-    
-    methods(Static)
-        function str = parseCmdLine(cmd,str)
-            % Parses FPGA's output into a MATLAB friendly format
-            
-            spclChars = {'[ ','\','^','$','.','|','?','*','+','(',')'};
-            spclCharsRep = {'\[ ','\\','\^','\$','\.','\|','\?','\*','\+','\(','\)'};
-            
-            for i = 1:length(spclChars)
-                cmd = strrep(cmd,spclChars{i},spclCharsRep{i});
+        
+        function setReg(obj, regNumList, regVal)
+            % Sets register using MIRACLE FPGA
+            if ismember(33, regNumList) % for SPI peripheral wries, make 32-bit
+                regVal = typecast(uint32(regVal),'int32');
             end
-            
-            str = regexprep(str,cmd,'');
-            str = regexprep(str,'root@analog:~#*','');
-            str = regexprep(str, {'\r', '\n\n+'}, {'', '\n'});
-            str = deblank(str(end:-1:1));
-            str = str(end:-1:1);
+            for regNum = regNumList
+                cmd = sprintf('setreg %g %.0f',regNum, regVal);
+                %     fprintf([cmd '\n']);
+                writeSSH(obj,cmd);
+                if regNum == 33
+                    pause (0.001); % pause 1ms if SPI peripheral
+                end
+            end
         end
         
+        function ssh2_conn = moveBinFileSD(obj, fileName)
+            % Moves binary file to SD card on baseband FPGA.  Requires ethernet
+            % connection.
+            
+            filePath = [fileName '.bin'];
+            ssh2_conn = scp_simple_put(obj.ipAddr,'root','analog',filePath);
+            
+            
+            writeSSH(obj,'mount /dev/mmcblk0p1 /mnt');
+            writeSSH(obj,sprintf('mv %s.bin /mnt/%s.bin',fileName,fileName));
+            writeSSH(obj,'umount /mnt');
+            
+        end
+        function writeBinFileSD(obj, wave, fileName, normEn)
+            % Writes binary vector and moves it to SD card.
+            
+            if nargin < 4
+                MIRACLETX.writeBinVec(wave,fileName);
+                %     writeBinVec(wave, fileName);
+            else
+                MIRACLETX.writeBinVec(wave,fileName,normEn);
+                %     writeBinVec(wave, fileName,normEn);
+            end
+            moveBinFileSD(obj,fileName);
+        end
+    end
+    
+    methods(Static)        
         function writeBinVec(IQ, fileName, normEn)
             %     Writes vector in binary format, for ZC706.  First input
             %     IQ is single column or single row or complex waveform
@@ -298,11 +197,10 @@ classdef MIRACLETX < handle
                 normEn = 1;
             end
             
+            amp = 2048; % for 12-bit vectors
             if normEn
-                amp = 2048; % for 12-bit vectors
                 IQNorm = normalize(IQ); % normalize by default
             else
-                amp = 1;
                 IQNorm = IQ;
             end
             
@@ -313,7 +211,7 @@ classdef MIRACLETX < handle
             IQFPGA(1:2:end) = real(IQNorm);
             IQFPGA(2:2:end) = imag(IQNorm);
             
-            fileID = fopen(sprintf('.\\%s.bin',fileName), 'w'); % open file for write
+            fileID = fopen([fileName '.bin'], 'w'); % open file for write
             fwrite(fileID, floor(scale*amp*IQFPGA), 'int16'); % write vector to file as int16
             fclose(fileID); % safely close file
             
